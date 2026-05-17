@@ -1,0 +1,79 @@
+name: Download to FTP
+
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: "Download URLs (separate with space)"
+        required: true
+        type: string
+
+      ftp_host:
+        description: "FTP Host"
+        required: true
+        type: string
+
+      ftp_user:
+        description: "FTP Username"
+        required: true
+        type: string
+
+      ftp_pass:
+        description: "FTP Password"
+        required: true
+        type: string
+
+      ftp_path:
+        description: "FTP Upload Path"
+        required: false
+        default: "/"
+        type: string
+
+jobs:
+  download-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2 lftp
+
+      - name: Prepare folder
+        run: mkdir -p files
+
+      - name: Download files (correct filename)
+        run: |
+          URLS="${{ github.event.inputs.urls }}"
+
+          for URL in $URLS; do
+            echo "Downloading: $URL"
+
+            aria2c \
+              -x 16 \
+              -s 16 \
+              -k 1M \
+              --file-allocation=none \
+              --content-disposition=true \
+              --auto-file-renaming=false \
+              --dir=files \
+              "$URL"
+
+          done
+
+      - name: Upload to FTP
+        run: |
+          HOST="${{ github.event.inputs.ftp_host }}"
+          USER="${{ github.event.inputs.ftp_user }}"
+          PASS="${{ github.event.inputs.ftp_pass }}"
+          PATH="${{ github.event.inputs.ftp_path }}"
+
+          lftp -u "$USER","$PASS" "$HOST" <<EOF
+          set ftp:ssl-allow no
+          mirror -R files $PATH
+          quit
+          EOF
+
+      - name: Done
+        run: echo "Upload completed with correct filenames"
