@@ -1,4 +1,4 @@
-name: Upload to WebDisk
+name: WebDisk Pre-Check + Upload
 
 on:
   workflow_dispatch:
@@ -9,12 +9,12 @@ on:
         type: string
 
       filename:
-        description: "Filename to save on WebDisk"
+        description: "Filename on WebDisk"
         required: true
         type: string
 
       webdav_url:
-        description: "WebDisk/WebDAV URL (example: https://example.com:2078/)"
+        description: "WebDisk URL (example: https://example.com:2078/)"
         required: true
         type: string
 
@@ -34,14 +34,43 @@ jobs:
     timeout-minutes: 360
 
     steps:
+
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl aria2
+          sudo apt-get install -y curl aria2 dnsutils
+
+      # ✅ 1️⃣ تست DNS
+      - name: DNS Check
+        run: |
+          HOST=$(echo "${{ github.event.inputs.webdav_url }}" | awk -F/ '{print $3}')
+          echo "Checking DNS for $HOST"
+          host "$HOST"
+
+      # ✅ 2️⃣ تست اتصال و لاگین WebDisk
+      - name: WebDisk Connection Test
+        run: |
+          echo "Testing WebDAV login..."
+
+          STATUS=$(curl -o /dev/null -s -w "%{http_code}" \
+            -u "${{ github.event.inputs.webdav_user }}:${{ github.event.inputs.webdav_pass }}" \
+            "${{ github.event.inputs.webdav_url }}")
+
+          echo "HTTP Status: $STATUS"
+
+          if [ "$STATUS" != "200" ] && [ "$STATUS" != "207" ]; then
+            echo "❌ WebDisk connection failed!"
+            exit 1
+          else
+            echo "✅ WebDisk connection successful!"
+          fi
+
+      # ✅ 3️⃣ دانلود فقط اگر WebDisk اوکی بود
+      - name: Prepare folder
+        run: mkdir -p files
 
       - name: Download file
         run: |
-          mkdir -p files
           aria2c \
             -x 16 \
             -s 16 \
@@ -51,17 +80,18 @@ jobs:
             --out="${{ github.event.inputs.filename }}" \
             "${{ github.event.inputs.url }}"
 
+      # ✅ 4️⃣ آپلود
       - name: Upload to WebDisk
         run: |
           FILE="files/${{ github.event.inputs.filename }}"
           TARGET="${{ github.event.inputs.webdav_url }}${{ github.event.inputs.filename }}"
 
-          echo "Uploading to: $TARGET"
+          echo "Uploading to $TARGET"
 
-          curl --fail --silent --show-error \
+          curl --fail --show-error \
             -T "$FILE" \
             -u "${{ github.event.inputs.webdav_user }}:${{ github.event.inputs.webdav_pass }}" \
             "$TARGET"
 
       - name: Done
-        run: echo "Upload completed"
+        run: echo "✅ Upload finished successfully"
