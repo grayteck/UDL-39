@@ -1,121 +1,333 @@
-name: Stream Zip Splitter
+name: Big dwonlaoder
 
 on:
   workflow_dispatch:
     inputs:
-      url:
-        description: "File URL"
+      urls:
+        description: "🔗 لینک های دانلود (با فاصله جدا کنید)"
         required: true
-      password:
-        description: "Zip password (optional)"
-        required: false
-        default: ""
         type: string
 
 jobs:
-  download_and_zip:
+  save-file:
+    name: "📥 دانلود"
     runs-on: ubuntu-latest
     timeout-minutes: 360
-
     permissions:
       contents: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Install tools
+      - name: 🔍 بررسی لینک
         run: |
-          sudo apt update
-          sudo apt install -y curl zip p7zip-full
-
-      - name: Prepare directories
-        run: |
-          mkdir -p downloads
-          mkdir -p tmp_parts
-
-      - name: Get filename from URL
-        id: get_filename
-        run: |
-          URL="${{ github.event.inputs.url }}"
-          # Try to extract filename from Content-Disposition header
-          FILENAME=$(curl -sI "$URL" | grep -i 'Content-Disposition:' | sed -n 's/.*filename=*\([^"]*\).*/\1/p' | tr -d ';\r\n')
-          # Fallback to extracting from URL
-          if [ -z "$FILENAME" ]; then
-            FILENAME=$(basename "$URL" | cut -d'?' -f1)
-          fi
-          # Sanitize filename to remove potentially problematic characters for git/filesystem
-          CLEAN_FILENAME=$(echo "$FILENAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
-          echo "Determined filename: $FILENAME"
-          echo "Cleaned filename: $CLEAN_FILENAME"
-          echo "filename=$CLEAN_FILENAME" >> $GITHUB_OUTPUT
-
-      - name: Stream download and split into parts
-        run: |
-          URL="${{ github.event.inputs.url }}"
-          FILENAME="${{ steps.get_filename.outputs.filename }}"
-          PART_PREFIX="downloads/$FILENAME.part."
-          MAX_PART_SIZE=95M # 95MB per part
-
-          echo "Streaming download of $FILENAME and splitting into parts..."
-          echo "Part prefix: $PART_PREFIX"
-
-          # Stream download and pipe directly to split
-          # -L follows redirects
-          # -o specifies output file pattern
-          curl -L "$URL" | split -b "$MAX_PART_SIZE" - "$PART_PREFIX"
-
-          echo "Splitting complete. Parts created in downloads/ directory."
-          ls -lh downloads/
-
-      - name: Zip all parts
-        run: |
-          PASSWORD="${{ github.event.inputs.password }}"
-          ARCHIVE_NAME="archive_${{ steps.get_filename.outputs.filename }}.zip"
-
-          echo "Zipping all parts into $ARCHIVE_NAME..."
-
-          if [ -n "$PASSWORD" ]; then
-            echo "Using password."
-            # Use zip -r to add all files recursively, -P for password
-            # Ensure all files in downloads/ are zipped
-            zip -r -P "$PASSWORD" "$ARCHIVE_NAME" downloads/*
-          else
-            echo "No password provided."
-            zip -r "$ARCHIVE_NAME" downloads/*
-          fi
-
-          echo "Zipping complete."
-          ls -lh "$ARCHIVE_NAME"
-
-          # Clean up the individual parts
-          echo "Cleaning up individual parts..."
-          rm -rf downloads/*
-
-          # Move the final zip archive to the root for easier commit
-          mv "$ARCHIVE_NAME" .
-
-      - name: Commit zip file
-        run: |
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-
-          ARCHIVE_NAME="archive_${{ steps.get_filename.outputs.filename }}.zip"
-
-          # Check if the zip file exists before trying to add/commit
-          if [ -f "$ARCHIVE_NAME" ]; then
-            git add "$ARCHIVE_NAME"
-            git commit -m "Downloaded and zipped: ${{ steps.get_filename.outputs.filename }}"
-            git push
-            echo "Zip file committed and pushed."
-          else
-            echo "Error: Zip file '$ARCHIVE_NAME' not found after zipping. Cannot commit."
+          if [ -z "${{ github.event.inputs.urls }}" ]; then
+            echo "❌ لینک وارد نشده!"
             exit 1
           fi
+          echo "✅ لینک دریافت شد"
 
-      - name: Show download link for the zip file
+      - name: 📂 بررسی اولیه
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: ⚙️ تنظیم اولیه
         run: |
-          REPO="${{ github.repository }}"
-          ARCHIVE_NAME="archive_${{ steps.get_filename.outputs.filename }}.zip"
-          echo "Download link for the zip archive:"
-          echo "https://raw.githubusercontent.com/$REPO/main/$ARCHIVE_NAME"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git config --global http.postBuffer 524288000
+          git config --global http.maxRequestBuffer 100M
+          git config --global core.compression 0
+          git config --global pack.windowMemory 256m
+          git config --global pack.packSizeLimit 100m
+          git config --global pack.threads 1
+
+      - name: 🛠 نصب ابزارها
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2 curl bc
+
+      - name: 📥 دانلود فایل
+        run: |
+          URLS="${{ github.event.inputs.urls }}"
+          SPLIT_SIZE_MB=95
+          SPLIT_SIZE_BYTES=$(( SPLIT_SIZE_MB * 1024 * 1024 ))
+
+          REPO_OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${{ github.event.repository.name }}"
+          BRANCH="${GITHUB_REF_NAME}"
+
+          echo "🌐 AVASAM Free (https://avasam.ir)"
+          echo "📦 دانلود فایل‌های حجیم فعال است"
+          echo "✂️ تقسیم فایل‌های بزرگتر از ${SPLIT_SIZE_MB}MB"
+          echo ""
+
+          mkdir -p downloads
+          mkdir -p tmp_downloads
+
+          urlencode() {
+            python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
+          }
+
+          create_error_file() {
+            local FILENAME="$1"
+            local ERROR_MSG="$2"
+            local URL="$3"
+            local BASENAME_NO_EXT="${FILENAME%.*}"
+            mkdir -p "downloads/${BASENAME_NO_EXT}"
+            {
+              echo "# ${FILENAME} - ❌ خطا"
+              echo ""
+              echo "| | |"
+              echo "|--|--|"
+              echo "| **فایل** | \`${FILENAME}\` |"
+              echo "| **لینک** | ${URL} |"
+              echo "| **تاریخ** | $(date '+%Y-%m-%d %H:%M:%S UTC') |"
+              echo ""
+              echo "## خطا"
+              echo "\`\`\`"
+              echo "$ERROR_MSG"
+              echo "\`\`\`"
+              echo ""
+              echo "---"
+              echo "*[avasam.ir](https://avasam.ir)*"
+            } > "downloads/${BASENAME_NO_EXT}/README.md"
+          }
+
+          download_file() {
+            local URL="$1"
+            local FILENAME="$2"
+            local MAX_RETRIES=3
+            local RETRY_DELAY=5
+            local SUCCESS=false
+            local ERROR_LOG=""
+
+            for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
+              echo "🔄 تلاش $attempt از $MAX_RETRIES برای $FILENAME"
+
+              rm -f "tmp_downloads/$FILENAME" "tmp_downloads/$FILENAME.aria2"
+
+              ERROR_LOG=$(aria2c \
+                --split=8 \
+                --max-connection-per-server=8 \
+                --min-split-size=10M \
+                --max-tries=3 \
+                --retry-wait=5 \
+                --timeout=120 \
+                --connect-timeout=60 \
+                --file-allocation=none \
+                --follow-torrent=false \
+                --check-certificate=false \
+                --allow-overwrite=true \
+                --auto-file-renaming=false \
+                --dir="tmp_downloads" \
+                --out="$FILENAME" \
+                "$URL" 2>&1)
+
+              if [ -f "tmp_downloads/$FILENAME" ] && [ -s "tmp_downloads/$FILENAME" ]; then
+                SUCCESS=true
+                echo "✅ دانلود با aria2 انجام شد: $FILENAME"
+                break
+              fi
+
+              echo "⚠️ aria2 ناموفق بود، تلاش با curl..."
+              rm -f "tmp_downloads/$FILENAME"
+
+              ERROR_LOG=$(curl -L -f -# \
+                --retry 3 \
+                --retry-delay 5 \
+                --connect-timeout 60 \
+                --max-time 0 \
+                -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+                -o "tmp_downloads/$FILENAME" \
+                "$URL" 2>&1)
+
+              if [ -f "tmp_downloads/$FILENAME" ] && [ -s "tmp_downloads/$FILENAME" ]; then
+                SUCCESS=true
+                echo "✅ دانلود با curl انجام شد: $FILENAME"
+                break
+              fi
+
+              rm -f "tmp_downloads/$FILENAME"
+              sleep $RETRY_DELAY
+              RETRY_DELAY=$((RETRY_DELAY * 2))
+            done
+
+            if [ "$SUCCESS" = true ]; then
+              return 0
+            fi
+
+            create_error_file "$FILENAME" "$ERROR_LOG" "$URL"
+            return 1
+          }
+
+          for URL in $URLS; do
+            [ -z "$URL" ] && continue
+
+            FILENAME=$(curl -sI -L "$URL" | grep -i 'Content-Disposition:' | sed -n 's/.*filename=*\([^"]*\).*/\1/p' | tr -d ';\r\n')
+            if [ -z "$FILENAME" ]; then
+              FILENAME=$(basename "${URL%%\?*}")
+            fi
+            FILENAME=$(echo "$FILENAME" | sed 's/%20/ /g' | sed 's/%2F/-/g' | sed 's/[<>:"|?*]/_/g')
+
+            if [ -z "$FILENAME" ]; then
+              FILENAME="download_$(date +%Y%m%d_%H%M%S)_$RANDOM"
+            fi
+
+            echo ""
+            echo "📥 $FILENAME"
+
+            if download_file "$URL" "$FILENAME"; then
+              BASENAME_NO_EXT="${FILENAME%.*}"
+              mkdir -p "downloads/${BASENAME_NO_EXT}"
+
+              FILE_SIZE=$(stat -c%s "tmp_downloads/$FILENAME" 2>/dev/null || echo "0")
+
+              if [ "$FILE_SIZE" -gt "$SPLIT_SIZE_BYTES" ]; then
+                echo "✂️ فایل بزرگ است، در حال تقسیم..."
+                split -b "$SPLIT_SIZE_BYTES" -d -a 3 "tmp_downloads/$FILENAME" "downloads/${BASENAME_NO_EXT}/${FILENAME}.part."
+                rm -f "tmp_downloads/$FILENAME"
+
+                PART_COUNT=$(find "downloads/${BASENAME_NO_EXT}" -type f | wc -l)
+
+                {
+                  echo "# ${BASENAME_NO_EXT}"
+                  echo ""
+                  echo "| | |"
+                  echo "|--|--|"
+                  echo "| **فایل** | \`${FILENAME}\` |"
+                  echo "| **وضعیت** | ✅ دانلود و تقسیم شد |"
+                  echo "| **تعداد پارت** | ${PART_COUNT} |"
+                  echo ""
+                  echo "## ℹ️ توضیح"
+                  echo "این فایل به پارت‌های ${SPLIT_SIZE_MB}MB تقسیم شده است."
+                  echo ""
+                  echo "---"
+                  echo "*[avasam.ir](https://avasam.ir)*"
+                } > "downloads/${BASENAME_NO_EXT}/README.md"
+              else
+                mv "tmp_downloads/$FILENAME" "downloads/${BASENAME_NO_EXT}/"
+
+                FILE_SIZE_MB=$(echo "scale=2; $FILE_SIZE / 1024 / 1024" | bc)
+                FOLDER_ENCODED=$(urlencode "${BASENAME_NO_EXT}")
+                FILE_ENCODED=$(urlencode "${FILENAME}")
+                RAW_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/downloads/${FOLDER_ENCODED}/${FILE_ENCODED}"
+
+                {
+                  echo "# ${BASENAME_NO_EXT}"
+                  echo ""
+                  echo "| | |"
+                  echo "|--|--|"
+                  echo "| **فایل** | \`${FILENAME}\` |"
+                  echo "| **حجم** | ${FILE_SIZE_MB} MB |"
+                  echo "| **وضعیت** | ✅ کامل |"
+                  echo ""
+                  echo "## 📥 دانلود"
+                  echo "[دانلود فایل](${RAW_LINK})"
+                  echo ""
+                  echo "---"
+                  echo "*[avasam.ir](https://avasam.ir)*"
+                } > "downloads/${BASENAME_NO_EXT}/README.md"
+              fi
+
+              echo "✅ $FILENAME"
+            else
+              echo "❌ $FILENAME"
+            fi
+          done
+
+          rm -rf tmp_downloads
+
+      - name: 📝 بروزرسانی README
+        run: |
+          REPO_URL="${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/downloads"
+
+          FOLDERS=$(find downloads -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
+
+          if [ -z "$FOLDERS" ]; then
+            echo "📭 فایلی نیست"
+            exit 0
+          fi
+
+          urlencode() {
+            python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
+          }
+
+          {
+            echo "# 📦 فایل‌ها"
+            echo ""
+            echo "$FOLDERS" | while read -r FOLDER; do
+              if [ -n "$FOLDER" ]; then
+                FOLDER_ENCODED=$(urlencode "${FOLDER}")
+                echo "- [${FOLDER}](./${FOLDER_ENCODED})"
+              fi
+            done
+            echo ""
+            echo "---"
+            echo "*[avasam.ir](https://avasam.ir)*"
+          } > "downloads/README.md"
+
+          SECTION_TITLE="📦 فایل‌ها"
+
+          if [ ! -f "README.md" ]; then
+            echo "# AVASAM Free" > README.md
+            echo "https://avasam.ir" >> README.md
+            echo "" >> README.md
+          fi
+
+          if grep -q "$SECTION_TITLE" README.md; then
+            sed -i "/$SECTION_TITLE/,/^---$/d" README.md
+            sed -i '${/^$/d;}' README.md
+          fi
+
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "## $SECTION_TITLE"
+            echo ""
+            COUNTER=1
+            echo "$FOLDERS" | while read -r FOLDER; do
+              if [ -n "$FOLDER" ]; then
+                FOLDER_ENCODED=$(urlencode "${FOLDER}")
+                echo "${COUNTER}. [$FOLDER]($REPO_URL/$FOLDER_ENCODED)"
+                COUNTER=$((COUNTER + 1))
+              fi
+            done
+            echo ""
+            echo "---"
+          } >> README.md
+
+      - name: 🚀 ذخیره
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+
+          git add -f downloads/
+          git add README.md
+
+          if ! git diff --cached --quiet; then
+            git commit -m "📥 [skip ci]"
+
+            PUSH_RETRY=0
+            while [ $PUSH_RETRY -lt 5 ]; do
+              PUSH_RETRY=$((PUSH_RETRY + 1))
+              if git push origin HEAD:"$BRANCH"; then
+                echo "✅ ذخیره شد"
+                break
+              else
+                echo "🔄 تلاش $PUSH_RETRY/5..."
+                sleep 5
+                git fetch origin "$BRANCH"
+                git rebase origin/"$BRANCH"
+                git add -f downloads/
+                git add README.md
+                if ! git diff --cached --quiet; then
+                  git commit -m "📥 [skip ci]"
+                fi
+              fi
+            done
+          else
+            echo "📭 تغییری نیست"
+          fi
+
+          echo "✅ تمام"
