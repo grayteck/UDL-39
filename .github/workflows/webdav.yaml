@@ -1,97 +1,102 @@
-name: WebDisk Pre-Check + Upload
+name: WebDisk Upload Workflow
 
 on:
   workflow_dispatch:
     inputs:
-      url:
-        description: "Direct file URL"
-        required: true
-        type: string
-
-      filename:
-        description: "Filename on WebDisk"
-        required: true
-        type: string
-
-      webdav_url:
-        description: "WebDisk URL (example: https://example.com:2078/)"
-        required: true
-        type: string
-
       webdav_user:
-        description: "WebDisk Username"
+        description: 'WebDAV Username'
         required: true
         type: string
-
       webdav_pass:
-        description: "WebDisk Password"
+        description: 'WebDAV Password'
+        required: true
+        type: string
+      download_url:
+        description: 'Direct download URL for the file'
+        required: true
+        type: string
+      filename:
+        description: 'Filename to be used for download and upload'
         required: true
         type: string
 
 jobs:
   upload:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
-
     steps:
-
-      - name: Install tools
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y curl aria2 dnsutils
 
-      # ✅ 1️⃣ تست DNS
-      - name: DNS Check
+      - name: Display inputs
         run: |
-          HOST=$(echo "${{ github.event.inputs.webdav_url }}" | awk -F/ '{print $3}')
-          echo "Checking DNS for $HOST"
-          host "$HOST"
+          echo "WebDAV User: ${{ github.event.inputs.webdav_user }}"
+          echo "Download URL: ${{ github.event.inputs.download_url }}"
+          echo "Filename: ${{ github.event.inputs.filename }}"
+          echo "WebDisk URL: https://carseh.com:2078/DavWWWRoot/"
 
-      # ✅ 2️⃣ تست اتصال و لاگین WebDisk
-      - name: WebDisk Connection Test
+      - name: Test WebDisk DNS
+        run: host carseh.com
+
+      - name: Test WebDisk Connection and Login
+        id: webdisk_test
         run: |
-          echo "Testing WebDAV login..."
-
-          STATUS=$(curl -o /dev/null -s -w "%{http_code}" \
+          WEBDISK_URL="https://carseh.com:2078/DavWWWRoot/"
+          echo "Testing WebDisk connection to $WEBDISK_URL..."
+          # Use -k for potential schannel-like issues, --silent, --show-error for clean output, --write-out to get HTTP code
+          STATUS=$(curl -k --silent --show-error --output /dev/null \
+            --write-out "%{http_code}" \
             -u "${{ github.event.inputs.webdav_user }}:${{ github.event.inputs.webdav_pass }}" \
-            "${{ github.event.inputs.webdav_url }}")
+            "$WEBDISK_URL")
 
-          echo "HTTP Status: $STATUS"
+          echo "HTTP Status from WebDisk test: $STATUS"
 
-          if [ "$STATUS" != "200" ] && [ "$STATUS" != "207" ]; then
-            echo "❌ WebDisk connection failed!"
-            exit 1
+          # Expected successful status codes for WebDAV PROPFIND or similar
+          if [ "$STATUS" = "200" ] || [ "$STATUS" = "207" ]; then
+            echo "WebDisk connection successful (Status: $STATUS)."
+            echo "webdisk_ok=true" >> $GITHUB_ENV
           else
-            echo "✅ WebDisk connection successful!"
+            echo "WebDisk connection failed (Status: $STATUS). Please check credentials or WebDisk URL."
+            echo "webdisk_ok=false" >> $GITHUB_ENV
+            exit 1 # Fail the job if WebDisk is not accessible
           fi
+        shell: bash
 
-      # ✅ 3️⃣ دانلود فقط اگر WebDisk اوکی بود
-      - name: Prepare folder
-        run: mkdir -p files
-
-      - name: Download file
+      - name: Download file if WebDisk is OK
+        if: env.webdisk_ok == 'true'
         run: |
-          aria2c \
-            -x 16 \
-            -s 16 \
-            -k 1M \
-            --file-allocation=none \
-            --dir=files \
-            --out="${{ github.event.inputs.filename }}" \
-            "${{ github.event.inputs.url }}"
+          DOWNLOAD_URL="${{ github.event.inputs.download_url }}"
+          FILENAME="${{ github.event.inputs.filename }}"
+          echo "Downloading file from $DOWNLOAD_URL to ./downloaded/$FILENAME..."
+          mkdir -p downloaded
+          aria2c --file-allocation=none -o "downloaded/$FILENAME" "$DOWNLOAD_URL"
+          echo "File downloaded successfully."
 
-      # ✅ 4️⃣ آپلود
-      - name: Upload to WebDisk
+      - name: List downloaded files
+        if: env.webdisk_ok == 'true'
         run: |
-          FILE="files/${{ github.event.inputs.filename }}"
-          TARGET="${{ github.event.inputs.webdav_url }}${{ github.event.inputs.filename }}"
+          echo "Listing downloaded files:"
+          ls -lh downloaded/
 
-          echo "Uploading to $TARGET"
-
-          curl --fail --show-error \
-            -T "$FILE" \
+      - name: Upload file to WebDisk
+        if: env.webdisk_ok == 'true'
+        run: |
+          WEBDISK_URL="https://carseh.com:2078/DavWWWRoot/"
+          FILENAME="${{ github.event.inputs.filename }}"
+          echo "Uploading downloaded/$FILENAME to $WEBDISK_URL..."
+          # Use -k to bypass certificate revocation check, --fail to exit on error, --show-error for logs
+          curl -k --fail --show-error \
+            -T "downloaded/$FILENAME" \
             -u "${{ github.event.inputs.webdav_user }}:${{ github.event.inputs.webdav_pass }}" \
-            "$TARGET"
+            "${WEBDISK_URL}${FILENAME}"
 
-      - name: Done
-        run: echo "✅ Upload finished successfully"
+          echo "File uploaded successfully."
+
+      - name: Final success message
+        if: success() && env.webdisk_ok == 'true'
+        run: echo "Workflow completed successfully! File ${{ github.event.inputs.filename }} uploaded to WebDisk."
+
+      - name: WebDisk test failed message
+        if: failure() && env.webdisk_ok == 'false'
+        run: echo "Workflow failed because WebDisk connection test failed."
