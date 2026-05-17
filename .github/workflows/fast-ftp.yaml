@@ -1,4 +1,4 @@
-name: Stream Download to FTP
+name: FTP Debug Transfer
 
 on:
   workflow_dispatch:
@@ -24,7 +24,7 @@ on:
         type: string
 
       ftp_path:
-        description: "FTP Upload Path"
+        description: "FTP Path"
         required: false
         default: "/"
         type: string
@@ -35,10 +35,24 @@ jobs:
     timeout-minutes: 360
 
     steps:
+
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y aria2 curl lftp
+          sudo apt-get install -y aria2 curl lftp iputils-ping
+
+      - name: Show inputs
+        run: |
+          echo "FTP HOST: ${{ github.event.inputs.ftp_host }}"
+          echo "FTP PATH: ${{ github.event.inputs.ftp_path }}"
+
+      - name: Test DNS
+        run: |
+          host "${{ github.event.inputs.ftp_host }}" || true
+
+      - name: Test ping
+        run: |
+          ping -c 3 "${{ github.event.inputs.ftp_host }}" || true
 
       - name: Prepare folder
         run: mkdir -p files
@@ -61,20 +75,29 @@ jobs:
 
           done
 
-      - name: Upload to FTP
+      - name: List downloaded files
+        run: |
+          echo "Downloaded files:"
+          ls -lh files
+
+      - name: FTP Debug Upload
         run: |
           HOST="${{ github.event.inputs.ftp_host }}"
           USER="${{ github.event.inputs.ftp_user }}"
           PASS="${{ github.event.inputs.ftp_pass }}"
           PATH="${{ github.event.inputs.ftp_path }}"
 
-          lftp -u "$USER","$PASS" "ftp://$HOST" -e "
+          echo "Starting FTP upload..."
+
+          lftp -d -u "$USER","$PASS" "ftp://$HOST" <<EOF
           set ftp:passive-mode true
           set net:max-retries 2
           set net:timeout 20
-          mirror -R files $PATH --parallel=4
+          set xfer:clobber on
+          ls
+          mirror -R files $PATH --parallel=2
           quit
-          "
+EOF
 
-      - name: Finished
-        run: echo "Transfer completed"
+      - name: Done
+        run: echo "Workflow finished"
