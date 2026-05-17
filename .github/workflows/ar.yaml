@@ -1,4 +1,4 @@
-name: Arvan Stable Chunk Transfer
+name: Arvan Optimized Transfer (Up to 15GB)
 
 on:
   workflow_dispatch:
@@ -7,16 +7,12 @@ on:
         description: "Download URLs (space separated)"
         required: true
       arvan_access_key:
-        description: "Arvan Access Key"
         required: true
       arvan_secret_key:
-        description: "Arvan Secret Key"
         required: true
       arvan_bucket:
-        description: "Bucket Name"
         required: true
       arvan_endpoint:
-        description: "S3 Endpoint"
         required: true
 
 jobs:
@@ -50,7 +46,7 @@ jobs:
         acl = private
         EOF
 
-    - name: Transfer files
+    - name: Transfer files (Stable Mode)
       run: |
         set -ex
 
@@ -58,30 +54,30 @@ jobs:
 
         for URL in $URLS; do
 
-          FILE=$(basename "${URL%%\?}")
-          echo "Processing $FILE"
+          SAFE_NAME="file_$(date +%s)_$RANDOM"
+          echo "Processing $SAFE_NAME"
 
           echo "Downloading and splitting..."
 
-          curl -L --retry 5 --retry-delay 5 "$URL" | split -b 1024M -d - "${FILE}.part"
+          curl -L --retry 5 --retry-delay 5 "$URL" \
+            | split -b 1024M -d - "${SAFE_NAME}.part"
 
           echo "Uploading parts..."
 
-          for PART in ${FILE}.part*; do
+          for PART in ${SAFE_NAME}.part*; do
 
             echo "Uploading $PART"
 
             rclone copy "$PART" arvan:${{ github.event.inputs.arvan_bucket }}/files/ \
-              --s3-chunk-size 128M \
-              --s3-upload-concurrency 4 \
-              --retries 10 \
-              --low-level-retries 20 \
+              --s3-chunk-size 2G \
+              --s3-upload-concurrency 1 \
+              --retries 5 \
               --progress
 
             rm "$PART"
 
           done
 
-          echo "Finished $FILE"
+          echo "Completed $SAFE_NAME"
 
         done
