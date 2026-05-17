@@ -47,13 +47,16 @@ jobs:
           URLS="${{ github.event.inputs.urls }}"
 
           for URL in $URLS; do
-            FILE=$(basename "$URL")
+            FILE=$(basename "$URL" | cut -d'?' -f1)
+
             echo "Downloading $FILE"
 
             aria2c \
               -x 16 \
               -s 16 \
               -k 1M \
+              --file-allocation=none \
+              --continue=true \
               --dir=tmp \
               --out="$FILE" \
               "$URL"
@@ -65,7 +68,6 @@ jobs:
           PASSWORD="${{ github.event.inputs.password }}"
 
           if [ "$MODE" = "zip" ]; then
-            echo "Creating zip..."
 
             if [ -n "$PASSWORD" ]; then
               zip -r -P "$PASSWORD" downloads/archive.zip tmp/*
@@ -79,16 +81,16 @@ jobs:
             rm -rf tmp
           fi
 
-      - name: Split large files (1.9GB)
+      - name: Split large files
         run: |
           cd downloads
 
           for f in *; do
             size=$(stat -c%s "$f")
 
-            if [ $size -gt 1900000000 ]; then
+            if [ $size -gt 95000000 ]; then
               echo "Splitting $f"
-              split -b 1900M "$f" "$f.part."
+              split -b 95M "$f" "$f.part."
               rm "$f"
             fi
           done
@@ -103,14 +105,15 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "Downloaded files"
             git push
+          else
+            echo "No changes"
           fi
 
-      - name: Show download links
+      - name: Show links
         run: |
-          echo "Download links:"
           REPO="${{ github.repository }}"
 
           for f in downloads/*; do
             name=$(basename "$f")
-            echo "https://github.com/$REPO/raw/main/downloads/$name"
+            echo "https://raw.githubusercontent.com/$REPO/main/downloads/$name"
           done
