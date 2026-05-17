@@ -1,4 +1,4 @@
-name: Arvan Fast Transfer
+name: Arvan Stable Transfer
 
 on:
   workflow_dispatch:
@@ -21,6 +21,7 @@ jobs:
     timeout-minutes: 360
 
     steps:
+
       - name: Install tools
         run: |
           sudo apt update
@@ -38,7 +39,7 @@ jobs:
           endpoint = ${{ github.event.inputs.arvan_endpoint }}
           EOF
 
-      - name: Download and Upload
+      - name: Transfer
         run: |
 
           IFS=' ' read -r -a URLS <<< "${{ github.event.inputs.urls }}"
@@ -54,19 +55,25 @@ jobs:
               -s16 \
               -k1M \
               --file-allocation=none \
-              --max-tries=10 \
+              --max-tries=20 \
               --retry-wait=5 \
               -o "$FILE" \
               "$URL"
 
-            echo "Uploading $FILE to Arvan"
+            echo "Uploading to Arvan"
 
             rclone copy "$FILE" arvan:${{ github.event.inputs.arvan_bucket }}/files/ \
-              --s3-chunk-size 128M \
-              --transfers 8 \
-              --checkers 16 \
+              --s3-chunk-size 256M \
+              --s3-upload-concurrency 16 \
+              --transfers 16 \
+              --checkers 32 \
+              --multi-thread-streams 8 \
+              --retries 10 \
+              --low-level-retries 20 \
+              --timeout 10m \
+              --contimeout 30s \
               --progress
 
-            rm "$FILE"
+            rm -f "$FILE"
 
           done
