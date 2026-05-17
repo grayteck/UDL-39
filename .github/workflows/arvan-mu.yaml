@@ -1,0 +1,82 @@
+name: Arvan Reliable Multipart Uploader
+
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: "لینک‌ها (با فاصله جدا کنید)"
+        required: true
+        type: string
+      arvan_access_key:
+        description: "Arvan Access Key"
+        required: true
+        type: string
+      arvan_secret_key:
+        description: "Arvan Secret Key"
+        required: true
+        type: string
+      arvan_bucket:
+        description: "Arvan Bucket Name"
+        required: true
+        type: string
+      arvan_endpoint:
+        description: "Arvan Endpoint (e.g. https://s3.ir-thr-at1.arvanstorage.ir)"
+        required: true
+        type: string
+
+jobs:
+  transfer:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free Space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+
+      - name: Install Rclone
+        run: |
+          curl https://rclone.org/install.sh | sudo bash
+
+      - name: Configure Rclone
+        run: |
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf <<EOF
+          [arvan]
+          type = s3
+          provider = Other
+          access_key_id = ${{ github.event.inputs.arvan_access_key }}
+          secret_access_key = ${{ github.event.inputs.arvan_secret_key }}
+          endpoint = ${{ github.event.inputs.arvan_endpoint }}
+          chunk_size = 64M
+          EOF
+
+      - name: Process Files
+        run: |
+          mkdir -p downloads
+          IFS=' ' read -r -a URL_ARRAY <<< "${{ github.event.inputs.urls }}"
+
+          for URL in "${URL_ARRAY[@]}"; do
+            if [ -n "$URL" ]; then
+              # ۱. استخراج نام فایل
+              FILENAME=$(basename "${URL%%\?}")
+              echo "--- Starting: $FILENAME ---"
+
+              # ۲. دانلود با قابلیت Resume و سرعت بالا
+              echo "Downloading..."
+              curl -L "$URL" -o "downloads/$FILENAME" --retry 3 --retry-delay 5
+
+              # ۳. آپلود پارت‌پارت به آروان
+              echo "Uploading to Arvan..."
+              rclone copy "downloads/$FILENAME" arvan:${{ github.event.inputs.arvan_bucket }}/files/ \
+                --progress \
+                --s3-upload-concurrency 8 \
+                --s3-chunk-size 64M \
+                --vfs-cache-mode writes \
+                --multi-thread-streams 4
+
+              # ۴. پاک کردن فایل از روی دیسک برای باز شدن فضا برای فایل بعدی
+              rm "downloads/$FILENAME"
+              echo "--- Finished: $FILENAME ---"
+            fi
+          done
