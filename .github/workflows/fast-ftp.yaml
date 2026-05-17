@@ -1,10 +1,15 @@
-name: FTP Debug Transfer
+name: Stream Link to FTP (Debug)
 
 on:
   workflow_dispatch:
     inputs:
-      urls:
-        description: "Download URLs (space separated)"
+      url:
+        description: "Direct file URL"
+        required: true
+        type: string
+
+      filename:
+        description: "Filename on FTP"
         required: true
         type: string
 
@@ -30,7 +35,7 @@ on:
         type: string
 
 jobs:
-  transfer:
+  stream:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -39,65 +44,57 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y aria2 curl lftp iputils-ping
+          sudo apt-get install -y curl lftp dnsutils iputils-ping
 
       - name: Show inputs
         run: |
+          echo "URL: ${{ github.event.inputs.url }}"
           echo "FTP HOST: ${{ github.event.inputs.ftp_host }}"
           echo "FTP PATH: ${{ github.event.inputs.ftp_path }}"
 
       - name: Test DNS
         run: |
+          echo "DNS lookup:"
           host "${{ github.event.inputs.ftp_host }}" || true
 
-      - name: Test ping
+      - name: Test Ping
         run: |
+          echo "Ping test:"
           ping -c 3 "${{ github.event.inputs.ftp_host }}" || true
 
-      - name: Prepare folder
-        run: mkdir -p files
-
-      - name: Download files
+      - name: Test FTP login (debug)
         run: |
-          URLS="${{ github.event.inputs.urls }}"
+          HOST="${{ github.event.inputs.ftp_host }}"
+          USER="${{ github.event.inputs.ftp_user }}"
+          PASS="${{ github.event.inputs.ftp_pass }}"
 
-          for URL in $URLS; do
-            echo "Downloading: $URL"
+          echo "Testing FTP login..."
 
-            aria2c \
-              -x 16 \
-              -s 16 \
-              -k 1M \
-              --file-allocation=none \
-              --content-disposition=true \
-              --dir=files \
-              "$URL"
+          lftp -d -u "$USER","$PASS" "ftp://$HOST" -e "
+          set ftp:passive-mode true
+          ls
+          quit
+          "
 
-          done
-
-      - name: List downloaded files
+      - name: Stream file to FTP
         run: |
-          echo "Downloaded files:"
-          ls -lh files
-
-      - name: FTP Debug Upload
-        run: |
+          URL="${{ github.event.inputs.url }}"
+          FILE="${{ github.event.inputs.filename }}"
           HOST="${{ github.event.inputs.ftp_host }}"
           USER="${{ github.event.inputs.ftp_user }}"
           PASS="${{ github.event.inputs.ftp_pass }}"
           PATH="${{ github.event.inputs.ftp_path }}"
 
-          echo "Starting FTP upload..."
+          echo "Starting stream upload..."
 
-          lftp -d -u "$USER","$PASS" "ftp://$HOST" <<EOF
+          curl -L "$URL" | lftp -d -u "$USER","$PASS" "ftp://$HOST" -e "
           set ftp:passive-mode true
           set net:max-retries 2
           set net:timeout 20
-          set xfer:clobber on
-          ls
-          mirror -R files $PATH --parallel=2
+          cd $PATH
+          put -o $FILE -
           quit
-EOF
+          "
 
       - name: Done
-        run: echo "Workflow finished"
+        run: echo "Transfer finished"
