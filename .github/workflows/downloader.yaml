@@ -1,0 +1,116 @@
+name: Fast Downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: "Download URLs (separate with space)"
+        required: true
+        type: string
+      mode:
+        description: "Download mode"
+        required: false
+        default: "normal"
+        type: choice
+        options:
+          - normal
+          - zip
+      password:
+        description: "Zip password (optional)"
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2 zip p7zip-full
+
+      - name: Prepare folders
+        run: |
+          mkdir -p downloads
+          mkdir -p tmp
+
+      - name: Download files
+        run: |
+          URLS="${{ github.event.inputs.urls }}"
+
+          for URL in $URLS; do
+            FILE=$(basename "$URL")
+            echo "Downloading $FILE"
+
+            aria2c \
+              -x 16 \
+              -s 16 \
+              -k 1M \
+              --dir=tmp \
+              --out="$FILE" \
+              "$URL"
+          done
+
+      - name: Zip mode
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          PASSWORD="${{ github.event.inputs.password }}"
+
+          if [ "$MODE" = "zip" ]; then
+            echo "Creating zip..."
+
+            if [ -n "$PASSWORD" ]; then
+              zip -r -P "$PASSWORD" downloads/archive.zip tmp/*
+            else
+              zip -r downloads/archive.zip tmp/*
+            fi
+
+            rm -rf tmp
+          else
+            mv tmp/* downloads/
+            rm -rf tmp
+          fi
+
+      - name: Split large files (1.9GB)
+        run: |
+          cd downloads
+
+          for f in *; do
+            size=$(stat -c%s "$f")
+
+            if [ $size -gt 1900000000 ]; then
+              echo "Splitting $f"
+              split -b 1900M "$f" "$f.part."
+              rm "$f"
+            fi
+          done
+
+      - name: Commit files
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+
+          git add downloads
+
+          if ! git diff --cached --quiet; then
+            git commit -m "Downloaded files"
+            git push
+          fi
+
+      - name: Show download links
+        run: |
+          echo "Download links:"
+          REPO="${{ github.repository }}"
+
+          for f in downloads/*; do
+            name=$(basename "$f")
+            echo "https://github.com/$REPO/raw/main/downloads/$name"
+          done
