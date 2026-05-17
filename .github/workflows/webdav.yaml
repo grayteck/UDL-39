@@ -1,0 +1,67 @@
+name: Upload to WebDisk
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Direct file URL"
+        required: true
+        type: string
+
+      filename:
+        description: "Filename to save on WebDisk"
+        required: true
+        type: string
+
+      webdav_url:
+        description: "WebDisk/WebDAV URL (example: https://example.com:2078/)"
+        required: true
+        type: string
+
+      webdav_user:
+        description: "WebDisk Username"
+        required: true
+        type: string
+
+      webdav_pass:
+        description: "WebDisk Password"
+        required: true
+        type: string
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl aria2
+
+      - name: Download file
+        run: |
+          mkdir -p files
+          aria2c \
+            -x 16 \
+            -s 16 \
+            -k 1M \
+            --file-allocation=none \
+            --dir=files \
+            --out="${{ github.event.inputs.filename }}" \
+            "${{ github.event.inputs.url }}"
+
+      - name: Upload to WebDisk
+        run: |
+          FILE="files/${{ github.event.inputs.filename }}"
+          TARGET="${{ github.event.inputs.webdav_url }}${{ github.event.inputs.filename }}"
+
+          echo "Uploading to: $TARGET"
+
+          curl --fail --silent --show-error \
+            -T "$FILE" \
+            -u "${{ github.event.inputs.webdav_user }}:${{ github.event.inputs.webdav_pass }}" \
+            "$TARGET"
+
+      - name: Done
+        run: echo "Upload completed"
