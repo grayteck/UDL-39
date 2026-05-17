@@ -1,4 +1,4 @@
-name: Arvan Chunk Stream Transfer
+name: Arvan Stable Chunk Transfer
 
 on:
   workflow_dispatch:
@@ -7,12 +7,16 @@ on:
         description: "Download URLs (space separated)"
         required: true
       arvan_access_key:
+        description: "Arvan Access Key"
         required: true
       arvan_secret_key:
+        description: "Arvan Secret Key"
         required: true
       arvan_bucket:
+        description: "Bucket Name"
         required: true
       arvan_endpoint:
+        description: "S3 Endpoint"
         required: true
 
 jobs:
@@ -22,12 +26,20 @@ jobs:
 
     steps:
 
+    - name: Free disk space
+      run: |
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /usr/local/lib/android
+
     - name: Install rclone
-      run: curl https://rclone.org/install.sh | sudo bash
+      run: |
+        curl https://rclone.org/install.sh | sudo bash
 
     - name: Configure rclone
       run: |
         mkdir -p ~/.config/rclone
+
         cat <<EOF > ~/.config/rclone/rclone.conf
         [arvan]
         type = s3
@@ -35,19 +47,25 @@ jobs:
         access_key_id = ${{ github.event.inputs.arvan_access_key }}
         secret_access_key = ${{ github.event.inputs.arvan_secret_key }}
         endpoint = ${{ github.event.inputs.arvan_endpoint }}
+        acl = private
         EOF
 
-    - name: Transfer
+    - name: Transfer files
       run: |
+        set -ex
 
-        URLS=(${{ github.event.inputs.urls }})
+        URLS="${{ github.event.inputs.urls }}"
 
-        for URL in "${URLS[@]}"; do
+        for URL in $URLS; do
 
           FILE=$(basename "${URL%%\?}")
-          echo "Downloading $FILE"
+          echo "Processing $FILE"
 
-          curl -L --retry 5 "$URL" | split -b 1024M -d - "${FILE}.part"
+          echo "Downloading and splitting..."
+
+          curl -L --retry 5 --retry-delay 5 "$URL" | split -b 1024M -d - "${FILE}.part"
+
+          echo "Uploading parts..."
 
           for PART in ${FILE}.part*; do
 
@@ -63,5 +81,7 @@ jobs:
             rm "$PART"
 
           done
+
+          echo "Finished $FILE"
 
         done
