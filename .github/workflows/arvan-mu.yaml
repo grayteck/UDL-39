@@ -1,35 +1,47 @@
-name: Arvan Reliable Uploader
+name: Arvan Ultra Transfer (100GB+)
 
 on:
   workflow_dispatch:
     inputs:
       urls:
-        description: "لینک‌های دانلود (با فاصله جدا کنید)"
+        description: "لینک های دانلود (با فاصله جدا کنید)"
         required: true
         type: string
       arvan_access_key:
         description: "Arvan Access Key"
         required: true
+        type: string
       arvan_secret_key:
         description: "Arvan Secret Key"
         required: true
+        type: string
       arvan_bucket:
         description: "Arvan Bucket Name"
         required: true
+        type: string
       arvan_endpoint:
         description: "Arvan Endpoint"
         required: true
+        type: string
 
 jobs:
   transfer:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
+
     steps:
+      - name: Free Disk Space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+
       - name: Install Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y rclone curl
+          sudo apt-get install -y rclone aria2 curl
 
-      - name: Configure Rclone
+      - name: Configure rclone
         run: |
           mkdir -p ~/.config/rclone
           cat > ~/.config/rclone/rclone.conf <<EOF
@@ -39,37 +51,55 @@ jobs:
           access_key_id = ${{ github.event.inputs.arvan_access_key }}
           secret_access_key = ${{ github.event.inputs.arvan_secret_key }}
           endpoint = ${{ github.event.inputs.arvan_endpoint }}
-          force_path_style = true
+          acl = private
+          chunk_size = 128M
+          upload_concurrency = 8
           EOF
 
-      - name: Process Files
-        shell: bash
-        env:
-          URLS: ${{ github.event.inputs.urls }}
+      - name: Transfer Files
         run: |
-          set -e # توقف بلافاصله در صورت خطا
-          set -x # نمایش تمام دستورات در حال اجرا برای دیباگ
-          
-          mkdir -p downloads
-          
-          # جدا سازی لینک ها بر اساس فاصله
-          for URL in $URLS; do
-            if [[ -n "$URL" ]]; then
-              # برای امنیت، اگر لینک شامل کاراکترهای خاص بود مشکل ایجاد نشود
-              FILENAME=$(echo "$URL" | awk -F'/' '{print $NF}' | cut -d'?' -f1)
-              
-              if [[ -z "$FILENAME" ]]; then FILENAME="file_$(date +%s)"; fi
-              
-              echo "Downloading $FILENAME ..."
-              curl -L -o "downloads/$FILENAME" "$URL" --retry 3
-              
-              echo "Uploading $FILENAME to Arvan ..."
-              rclone copy "downloads/$FILENAME" arvan:${{ github.event.inputs.arvan_bucket }}/files/ \
-                --s3-chunk-size=64M \
-                --s3-upload-concurrency=4 \
-                -P
-              
-              echo "Deleting $FILENAME from runner ..."
-              rm "downloads/$FILENAME"
-            fi
+          set -e
+
+          IFS=' ' read -r -a URL_ARRAY <<< "${{ github.event.inputs.urls }}"
+
+          transfer_file () {
+            URL=$1
+            FILENAME=$(basename "${URL%%\?}")
+
+            echo "Starting transfer: $FILENAME"
+
+            aria2c \
+              --max-connection-per-server=8 \
+              --split=8 \
+              --min-split-size=10M \
+              --file-allocation=none \
+              --summary-interval=5 \
+              --retry-wait=5 \
+              --max-tries=10 \
+              --dir=/tmp \
+              --out="$FILENAME" \
+              "$URL"
+
+            echo "Uploading to Arvan..."
+
+            rclone copy "/tmp/$FILENAME" arvan:${{ github.event.inputs.arvan_bucket }}/files/ \
+              --s3-chunk-size 128M \
+              --transfers 8 \
+              --checkers 16 \
+              --progress
+
+            rm -f "/tmp/$FILENAME"
+
+            echo "Finished: $FILENAME"
+          }
+
+          export -f transfer_file
+
+          for URL in "${URL_ARRAY[@]}"; do
+            transfer_file "$URL" &
           done
+
+          wait
+
+      - name: Done
+        run: echo "All transfers completed successfully"
