@@ -7,24 +7,20 @@ on:
         description: "لینک های دانلود (با فاصله جدا کنید)"
         required: true
         type: string
-
       arvan_access_key:
         description: "Arvan Access Key"
         required: true
         type: string
-
       arvan_secret_key:
         description: "Arvan Secret Key"
         required: true
         type: string
-
       arvan_bucket:
         description: "Arvan Bucket Name"
         required: true
         type: string
-
       arvan_endpoint:
-        description: "Arvan Endpoint (مثال: https://s3.ir-thr-at1.arvanstorage.ir)"
+        description: "Arvan Endpoint"
         required: true
         type: string
 
@@ -45,7 +41,6 @@ jobs:
       - name: Configure rclone
         run: |
           mkdir -p ~/.config/rclone
-
           cat > ~/.config/rclone/rclone.conf <<EOF
           [arvan]
           type = s3
@@ -53,22 +48,26 @@ jobs:
           access_key_id = ${{ github.event.inputs.arvan_access_key }}
           secret_access_key = ${{ github.event.inputs.arvan_secret_key }}
           endpoint = ${{ github.event.inputs.arvan_endpoint }}
-          no_check_bucket = true
+          acl = private
           EOF
 
       - name: Download files
         run: |
-          mkdir downloads
-          URLS="${{ github.event.inputs.urls }}"
-
-          for URL in $URLS; do
-            FILE=$(basename "${URL%%\?*}")
-            echo "Downloading $FILE"
-            aria2c -x 16 -s 16 -k 1M --dir downloads --out "$FILE" "$URL"
+          mkdir -p downloads
+          # تبدیل رشته ورودی به آرایه با جداکننده فاصله
+          IFS=' ' read -r -a URL_ARRAY <<< "${{ github.event.inputs.urls }}"
+          
+          for URL in "${URL_ARRAY[@]}"; do
+            if [ -n "$URL" ]; then
+              echo "Downloading: $URL"
+              # استفاده از --content-disposition برای استخراج نام واقعی فایل
+              aria2c -x 16 -s 16 -k 1M --dir=downloads --content-disposition "$URL"
+            fi
           done
 
       - name: Upload to Arvan
         run: |
+          # اطمینان از وجود پوشه و فایل قبل از آپلود
           rclone copy downloads/ arvan:${{ github.event.inputs.arvan_bucket }}/files/ \
             --progress \
             --transfers 4 \
@@ -76,5 +75,5 @@ jobs:
             --s3-upload-concurrency 4
 
       - name: Done
-        run: |
-          echo "Upload finished"
+        if: always()
+        run: echo "Process finished"
